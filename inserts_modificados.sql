@@ -1,4 +1,3 @@
-
 start transaction;
 
 -- --------------- Tabla CIUDAD ---------------
