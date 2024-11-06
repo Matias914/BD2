@@ -387,17 +387,19 @@ INSERT INTO "lineacomprobante" (nro_linea,id_comp,id_tcomp,descripcion,cantidad,
 INSERT INTO "lineacomprobante" (nro_linea,id_comp,id_tcomp,descripcion,cantidad,importe,id_servicio) VALUES (1281,538,'2','faucibus. Morbi',5,81,58),(1282,886,'2','gravida non,',1,2,100),(1283,540,'2','quis, pede.',4,37,65),(1284,949,'2','ipsum. Suspendisse',5,75,58),(1285,623,'2','lorem, sit',2,64,58),(1286,357,'2','Nulla facilisi.',1,8,96),(1287,668,'2','nunc. In',4,79,51),(1288,927,'2','Nunc ac',3,97,71),(1289,805,'2','Cum sociis',3,24,86),(1290,921,'2','pede. Nunc',4,3,57);
 INSERT INTO "lineacomprobante" (nro_linea,id_comp,id_tcomp,descripcion,cantidad,importe,id_servicio) VALUES (1291,555,'2','feugiat placerat',1,39,96),(1292,543,'2','eu tempor',5,65,93),(1293,301,'2','a, arcu.',5,52,62),(1294,168,'2','molestie tellus.',3,64,84),(1295,81,'2','tellus justo',2,24,74),(1296,29,'2','ridiculus mus.',2,20,100),(1297,115,'2','rutrum lorem',2,47,55),(1298,535,'2','felis eget',4,34,89),(1299,593,'2','amet risus.',3,45,55),(1300,641,'2','Proin mi.',5,1,60);
 
+-- borra las facturas que no tienen lineas
 delete from comprobante c
 	where id_tcomp = 1 and
 		not exists(select 1 from lineacomprobante where id_comp = c.id_comp and id_tcomp=c.id_tcomp);
+-- borra las lineas de factura que no apuntan a ningun comprobante
 delete from lineacomprobante c
 	where id_tcomp = 1 and
 	not exists(select 1 from comprobante where id_comp = c.id_comp and id_tcomp=c.id_tcomp);
-
+-- borra los remitos que no tienen lineas
 delete from comprobante c
 	where id_tcomp = 2 and
 	not exists(select 1 from lineacomprobante where id_comp = c.id_comp and id_tcomp=c.id_tcomp);
-
+-- borra las lineas de los remitos que no apuntan a ningun comprobante
 delete from lineacomprobante c
 	where id_tcomp = 2 and
 	not exists(select 1 from comprobante where id_comp = c.id_comp and id_tcomp=c.id_tcomp);
@@ -409,16 +411,18 @@ create or replace function fnc_comprobante() RETURNS void AS $$
 		v_hour integer;
 		v_total numeric(18,5);
     BEGIN
+	    -- por cada comprobante
     	FOR v_compr IN SELECT * FROM comprobante LOOP
-
+            -- guarda en v_turno_fecha lo que se encuentra en la fecha del turno del comprobante
     		select desde
     		into v_turno_fecha
     		from turno
     		where id_turno = v_compr.id_turno;
 
+            -- no tiene lineas
     		-- Recibo
     		if (v_compr.id_tcomp = 3) then
-	    		v_hour = floor(random()*8);
+	    		v_hour = floor(random() * 8);
 	    		update comprobante set fecha = v_turno_fecha + (''||v_hour||' hour')::interval,
 	    			fecha_vencimiento = null,
 	    			estado = 'PAGADO'
@@ -428,8 +432,8 @@ create or replace function fnc_comprobante() RETURNS void AS $$
 
     		-- Factura
     		if (v_compr.id_tcomp = 1) then
-
-    			select coalesce(sum(importe), 0)
+                -- se corrigio el sum() y se agrego cantidad
+    			select coalesce(sum(importe * cantidad), 0)
     			into v_total
     			from lineacomprobante
     			where id_comp = v_compr.id_comp and
@@ -442,6 +446,7 @@ create or replace function fnc_comprobante() RETURNS void AS $$
     				id_tcomp = v_compr.id_tcomp;
     		end if;
 
+            -- se setea el importe cero
     		-- Remito
     		if (v_compr.id_tcomp = 2) then
 				update comprobante set

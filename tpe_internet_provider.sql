@@ -800,101 +800,115 @@ BEGIN
 /* --------------------------------- DEFINICION DE FUNCIONES -------------------------------- */
 
 -- Funcion de comprobación de actualización de Comprobante
-DROP FUNCTION IF EXISTS fn_up_comprobante;
+DROP FUNCTION IF EXISTS fn_up_comprobante CASCADE;
 CREATE OR REPLACE FUNCTION fn_up_comprobante()
 RETURNS TRIGGER AS $$
 BEGIN
+    -- cambia el importe del comprobante, se compara el
+    -- importe del mismo con el de las lineas correspon-
+    -- dientes
     IF (
-        SELECT SUM(lc.importe)
-        FROM LineaComprobante lc
-        WHERE NEW.id_comp = lc.id_comp
-          AND NEW.id_tcomp = lc.id_tcomp
+        SELECT SUM(importe * cantidad)
+        FROM LineaComprobante
+        WHERE NEW.id_comp = id_comp
+          AND 1 = id_tcomp
     ) != NEW.importe THEN
-        RAISE EXCEPTION
-            'El importe de la factura % no coincide con el de sus líneas',
-            NEW.id_comp;
+        RAISE EXCEPTION 'El importe del comprobante no coincide con el de sus lineas';
     END IF;
     RETURN NULL;
 END $$ LANGUAGE 'plpgsql';
 
 -- Funcion de comprobación de inserción o eliminación de Comprobante
-DROP FUNCTION IF EXISTS fn_indel_linea_comprobante;
+DROP FUNCTION IF EXISTS fn_indel_linea_comprobante CASCADE;
 CREATE OR REPLACE FUNCTION fn_indel_linea_comprobante()
 RETURNS TRIGGER AS $$
 DECLARE
     id_comprobante BIGINT;
 BEGIN
+    -- Si es un INSERT se toma el ID nuevo, sino el viejo
     IF (TG_OP = 'INSERT') THEN
         id_comprobante = NEW.id_comp;
     ELSE
-        id_comprobante = old.id_comp;
+        id_comprobante = OLD.id_comp;
     END IF;
+    -- Si era un INSERT se comprueba que la suma de los im-
+    -- portes de las líneas con el nuevo ID coincida con
+    -- el del comprobante correspondiente.
+    -- Si era un DELETE, con el viejo ID
     IF (
-        SELECT c.importe
-        FROM Comprobante c
-        WHERE c.id_comp = id_comprobante
-          AND c.id_tcomp = 1
+        SELECT importe
+        FROM Comprobante
+        WHERE id_comp = id_comprobante
+          AND id_tcomp = 1
     ) != (
-        SELECT SUM(lc.importe)
-        FROM LineaComprobante lc
-        WHERE lc.id_comp = id_comprobante
-          AND lc.id_tcomp = 1
+        SELECT SUM(importe * cantidad)
+        FROM LineaComprobante
+        WHERE id_comp = id_comprobante
+          AND id_tcomp = 1
     ) THEN
-        RAISE EXCEPTION
-            'El importe de la factura % no coincide con el de sus líneas',
-            id_comprobante;
+        RAISE EXCEPTION 'El importe del comprobante no coincide con el de sus lineas';
     END IF;
-    IF (TG_OP = 'INSERT') THEN
-        RETURN NEW;
-    ELSE
-        RETURN OLD;
-    END IF;
+    RETURN NULL;
 END $$ LANGUAGE 'plpgsql';
 
-DROP FUNCTION IF EXISTS fn_up_linea_comprobante;
+DROP FUNCTION IF EXISTS fn_up_linea_comprobante CASCADE;
 CREATE OR REPLACE FUNCTION fn_up_linea_comprobante()
 RETURNS TRIGGER AS $$
 BEGIN
+    -- Si la nueva tupla es una Factura, chequeo el importe
+    -- para el nuevo ID.
     IF (NEW.id_tcomp = 1) THEN
         IF (
-            SELECT SUM(lc.importe)
-            FROM LineaComprobante lc
-            WHERE NEW.id_comp = lc.id_comp
-              AND NEW.id_tcomp = lc.id_tcomp
+            SELECT SUM(importe * cantidad)
+            FROM LineaComprobante
+            WHERE NEW.id_comp = id_comp
+              AND 1 = id_tcomp
         ) != (
-            SELECT c.importe
-            FROM Comprobante c
-            WHERE NEW.id_comp = c.id_comp
-              AND NEW.id_tcomp = c.id_tcomp
+            SELECT importe
+            FROM Comprobante
+            WHERE NEW.id_comp = id_comp
+              AND 1 = id_tcomp
         ) THEN
-             RAISE EXCEPTION
-                'El importe de la factura % no coincide con el de sus líneas',
-                NEW.id_comp;
+            RAISE EXCEPTION 'El importe del comprobante no coincide con el de sus lineas';
         END IF;
     END IF;
+    -- CASO A: (NEW.id_tcomp != 1) ???
+    -- Si el NEW.id_tcomp != 1, esto significa que el OLD
+    -- es 1 (mirar el WHEN). Se chequea importe para
+    -- el OLD. De la tupla NEW y OLD, hay una que es fact.
+    -- CASO B: (NEW id_tcomp = 1)
+    -- Si el OLD.id_tcomp = 1 y el id_comp cambia
+    -- (hay dos facturas a chequear: la nueva y la vieja),
+    -- se chequea el importe para el ID viejo. Si el
+    -- id_comp no cambia entonces se trata de la misma
+    -- factura que se chequeó arriba.
     IF NEW.id_tcomp != 1 OR
-       OLD.id_tcomp = 1 AND (NEW.ID_COMP != OLD.ID_COMP) THEN
+       OLD.id_tcomp = 1 AND NEW.id_comp != OLD.id_comp
+    THEN
         IF (
-            SELECT SUM(lc.importe)
-            FROM LineaComprobante lc
-            WHERE OLD.id_comp = lc.id_comp
-              AND OLD.id_tcomp = lc.id_tcomp
-        ) != (
-            SELECT c.importe
-            FROM Comprobante c
-            WHERE OLD.id_comp = c.id_comp
-              AND OLD.id_tcomp = c.id_tcomp
+            NEW.id_comp != OLD.id_comp OR
+            NEW.id_tcomp != OLD.id_tcomp
         ) THEN
-            RAISE EXCEPTION
-                'El importe de la factura % no coincide con el de sus líneas',
-                OLD.id_comp;
+            IF (
+                SELECT SUM(importe * cantidad)
+                FROM LineaComprobante
+                WHERE OLD.id_comp = id_comp
+                  AND 1 = id_tcomp
+            ) != (
+                SELECT importe
+                FROM Comprobante
+                WHERE OLD.id_comp = id_comp
+                  AND 1 = id_tcomp
+            ) THEN
+                RAISE EXCEPTION 'El importe del comprobante no coincide con el de sus lineas';
+            END IF;
         END IF;
     END IF;
-    RETURN NEW;
+    RETURN NULL;
 END $$ LANGUAGE 'plpgsql';
 
 -- Funcion de actualizacion y eliminacion de Equipo
-DROP FUNCTION IF EXISTS fn_in_up_equipo;
+DROP FUNCTION IF EXISTS fn_in_up_equipo CASCADE;
 CREATE OR REPLACE FUNCTION fn_in_up_equipo()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -911,7 +925,7 @@ BEGIN
 END $$ LANGUAGE 'plpgsql';
 
 -- Funcion de actualización de la Vista2
-DROP FUNCTION IF EXISTS fn_update_Vista2;
+DROP FUNCTION IF EXISTS fn_update_Vista2 CASCADE;
 CREATE OR REPLACE FUNCTION fn_update_Vista2()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -994,7 +1008,7 @@ BEGIN
 END $$ LANGUAGE 'plpgsql';
 
 -- Funcion de eliminación de la Vista2
-DROP FUNCTION IF EXISTS fn_delete_Vista2;
+DROP FUNCTION IF EXISTS fn_delete_Vista2 CASCADE;
 CREATE OR REPLACE FUNCTION fn_delete_Vista2()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -1035,34 +1049,27 @@ EXECUTE FUNCTION fn_in_up_Equipo();
 -- TRIGGER : Comprobante UPDATE
 DROP TRIGGER IF EXISTS tr_up_comprobante ON Comprobante;
 CREATE CONSTRAINT TRIGGER tr_up_comprobante
-AFTER UPDATE OF id_comp, id_tcomp, importe ON comprobante
+AFTER UPDATE OF importe ON comprobante
 DEFERRABLE
 INITIALLY DEFERRED
 FOR EACH ROW
-WHEN (
-    NOT (
-        NEW.id_tcomp = OLD.id_tcomp AND
-        NEW.importe = OLD.importe AND
-        NEW.id_comp = OLD.id_comp
-    )
-    AND NEW.id_tcomp = 1
-)
+WHEN (NEW.id_tcomp = 1 AND NEW.importe != OLD.importe)
 EXECUTE FUNCTION fn_up_comprobante();
-
 -- TRIGGER : LineaComprobante UPDATE
 DROP TRIGGER IF EXISTS tr_up_linea_comprobante ON Comprobante;
 CREATE CONSTRAINT TRIGGER tr_up_linea_comprobante
-AFTER UPDATE OF id_comp, id_tcomp, importe ON LineaComprobante
+AFTER UPDATE OF id_comp, id_tcomp, importe, cantidad
+ON LineaComprobante
 DEFERRABLE
 INITIALLY DEFERRED
 FOR EACH ROW
-WHEN (
-    NEW.id_tcomp = 1 OR OLD.id_tcomp = 1
-    AND NOT (
-        NEW.id_tcomp = OLD.id_tcomp AND NEW.id_comp = OLD.id_comp
-    ) OR (
-        NEW.importe != OLD.importe AND NEW.id_tcomp = 1
-    )
+WHEN (( -- si cambia alguno entonces me fijo si la tupla
+        -- anterior o la nueva era una factura
+        NEW.id_tcomp != OLD.id_tcomp OR
+        NEW.id_comp != OLD.id_comp OR
+        NEW.importe != OLD.importe OR
+        NEW.cantidad != OLD.cantidad
+    ) AND (NEW.id_tcomp = 1 OR OLD.id_tcomp = 1)
 )
 EXECUTE FUNCTION fn_up_linea_comprobante();
 
@@ -1073,6 +1080,7 @@ AFTER DELETE ON LineaComprobante
 DEFERRABLE
 INITIALLY DEFERRED
 FOR EACH ROW
+-- me importa solo si era una factura
 WHEN (OLD.id_tcomp = 1)
 EXECUTE FUNCTION fn_indel_linea_comprobante();
 
@@ -1083,6 +1091,7 @@ AFTER INSERT ON LineaComprobante
 DEFERRABLE
 INITIALLY DEFERRED
 FOR EACH ROW
+-- me importa solo si es una factura
 WHEN (NEW.id_tcomp = 1)
 EXECUTE FUNCTION fn_indel_linea_comprobante();
 
@@ -1378,9 +1387,13 @@ WHERE descripcion ILIKE 'La fecha de carga es %';
 
 /* ------------------------------------- TRANSACCIONES -------------------------------------- */
 
--- esta transacción actualiza los comprobantes
--- nota: darse cuenta que fuera de la transaccion
--- no se puede hacer.
+SELECT id_comp, id_tcomp, Comprobante.importe, nro_linea, LineaComprobante.importe, cantidad
+FROM LineaComprobante
+JOIN Comprobante USING (id_comp, id_tcomp)
+WHERE id_tcomp = 1
+ORDER BY id_comp;
+
+-- esta transacción comprueba el insert en LineaComprobante
 START TRANSACTION ;
 -- inserta nueva linea
 INSERT INTO LineaComprobante (
@@ -1392,30 +1405,124 @@ INSERT INTO LineaComprobante (
     importe,
     id_servicio
 ) VALUES
-(2, 997, 1, 'La fecha de carga es <null>', 1, 890, 1);
+(2, 11, 1, 'La fecha de carga es <null>', 1, 83, 1);
 -- actualiza el importe del comprobante
 -- (suma el de la nueva linea)
 UPDATE Comprobante SET
-    importe = importe + 890
-WHERE id_comp = 997
+    importe = importe + 83
+WHERE id_comp = 11
   AND id_tcomp = 1;
 END;
 
--- mismas sentencias que arriba
-INSERT INTO LineaComprobante (
-    nro_linea,
-    id_comp,
-    id_tcomp,
-    descripcion,
-    cantidad,
-    importe,
-    id_servicio
-) VALUES
-(2, 997, 1, 'La fecha de carga es <null>', 1, 890, 1);
+-- esta transacción comprueba el delete en LineaComprobante
+START TRANSACTION ;
+-- borra una linea
+DELETE FROM LineaComprobante
+WHERE id_comp = 11 AND id_tcomp = 1 AND nro_linea = 2;
+-- actualiza el importe del comprobante
+-- (suma el de la nueva linea)
 UPDATE Comprobante SET
-    importe = importe + 890
-WHERE id_comp = 997
+    importe = importe - 83
+WHERE id_comp = 11
   AND id_tcomp = 1;
+END;
+
+-- esta transacción comprueba el update de cantidad en LineaComprobante
+START TRANSACTION ;
+-- actualiza la cantidad
+UPDATE LineaComprobante SET
+    cantidad = 2
+WHERE id_comp = 11 AND id_tcomp = 1 AND nro_linea = 209;
+-- actualiza el importe del comprobante
+-- (suma el de la nueva linea)
+UPDATE Comprobante SET
+    importe = importe - 92 * 2
+WHERE id_comp = 11
+  AND id_tcomp = 1;
+END;
+
+-- esta transacción comprueba el update de importe en LineaComprobante
+START TRANSACTION ;
+-- actualiza el importe
+UPDATE LineaComprobante SET
+    importe = 20
+WHERE id_comp = 11 AND id_tcomp = 1 AND nro_linea = 209;
+-- actualiza el importe del comprobante
+-- (suma el de la nueva linea)
+UPDATE Comprobante SET
+    importe = importe - 92 * 2 + 20 * 2
+WHERE id_comp = 11
+  AND id_tcomp = 1;
+END;
+
+-- esta transacción comprueba el update de ID en LineaComprobante
+START TRANSACTION ;
+-- actualiza el ID
+UPDATE LineaComprobante SET
+    id_comp = 13
+WHERE id_comp = 11 AND id_tcomp = 1 AND nro_linea = 209;
+-- actualiza los importes de los comprobantes
+-- (suma el de la nueva linea)
+UPDATE Comprobante SET
+    importe = importe + 20 * 2
+WHERE id_comp = 13
+  AND id_tcomp = 1;
+UPDATE Comprobante SET
+    importe = importe - 20 * 2
+WHERE id_comp = 11
+  AND id_tcomp = 1;
+END;
+
+-- esta transacción comprueba el update de ID y cantidad en LineaComprobante
+START TRANSACTION ;
+-- actualiza el ID
+UPDATE LineaComprobante SET
+    cantidad = 6,
+    id_comp = 11
+WHERE id_comp = 13 AND id_tcomp = 1 AND nro_linea = 209;
+-- actualiza los importes de los comprobantes
+-- (suma el de la nueva linea)
+UPDATE Comprobante SET
+    importe = importe - 20 * 2
+WHERE id_comp = 13
+  AND id_tcomp = 1;
+UPDATE Comprobante SET
+    importe = importe + 20 * 6
+WHERE id_comp = 11
+  AND id_tcomp = 1;
+END;
+
+-- esta transacción comprueba el update de ID (no factura) y cantidad en LineaComprobante
+START TRANSACTION ;
+-- actualiza el ID
+UPDATE LineaComprobante SET
+    cantidad = 2,
+    id_comp = 7,
+    id_tcomp = 3
+WHERE id_comp = 11 AND id_tcomp = 1 AND nro_linea = 209;
+-- actualiza los importes de los comprobantes
+-- (suma el de la nueva linea)
+UPDATE Comprobante SET
+    importe = importe - 20 * 6
+WHERE id_comp = 11
+  AND id_tcomp = 1;
+END;
+
+START TRANSACTION ;
+-- actualiza el ID
+UPDATE LineaComprobante SET
+    cantidad = 4,
+    importe = 2,
+    id_comp = 11,
+    id_tcomp = 1
+WHERE id_comp = 7 AND id_tcomp = 3 AND nro_linea = 209;
+-- actualiza los importes de los comprobantes
+-- (suma el de la nueva linea)
+UPDATE Comprobante SET
+    importe = importe + 8
+WHERE id_comp = 11
+  AND id_tcomp = 1;
+END;
 
 -- esta transacción permuta los comprobantes
 -- nota: se puede hacer esto porque se pueden
