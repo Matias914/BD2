@@ -454,7 +454,7 @@ create or replace function fnc_comprobante() RETURNS void AS $$
 
 	    END LOOP;
     END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE 'plpgsql';
 
 select fnc_comprobante();
 
@@ -477,7 +477,7 @@ BEGIN
     );
     RETURN mac_address;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE 'plpgsql';
 
 update equipo set mac = generate_random_mac();
 
