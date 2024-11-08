@@ -353,19 +353,18 @@ INCREMENT BY 1;
 
 DROP VIEW IF EXISTS Vista1;
 CREATE OR REPLACE VIEW Vista1 AS
-    SELECT datos_persona.*, c.saldo
+    SELECT
+        c.id_cliente,
+        p.nombre,
+        p.apellido,
+        p.tipodoc,
+        p.nrodoc,
+        c.saldo
     FROM Cliente c
-    JOIN (
-        SELECT
-            id_persona AS id_cliente,
-            nombre,
-            apellido,
-            tipodoc,
-            nrodoc
-        FROM Persona
-        WHERE AGE(fecha_nacimiento) < '30 years'
-    ) AS datos_persona USING (id_cliente)
-    WHERE EXISTS (
+    JOIN Persona p
+    ON (c.id_cliente = p.id_persona)
+    WHERE AGE(fecha_nacimiento) < '30 years'
+      AND EXISTS (
         SELECT 1
         FROM Equipo
         WHERE id_servicio IS NOT NULL
@@ -389,67 +388,78 @@ CREATE OR REPLACE VIEW Vista1 AS
 
 DROP VIEW IF EXISTS Vista2;
 CREATE OR REPLACE VIEW Vista2 AS
-    SELECT datos_cliente.*, datos_servicio.*
-    FROM (
-        SELECT DISTINCT id_cliente, id_servicio
-        FROM Equipo
-        WHERE id_cliente IS NOT NULL
-          AND id_servicio IS NOT NULL
-    ) AS datos_eq
-    JOIN (
-        SELECT datos_persona.*, saldo
-        FROM Cliente JOIN (
-            SELECT
-                id_persona AS id_cliente,
-                tipo,
-                tipodoc,
-                nrodoc,
-                nombre,
-                apellido,
-                fecha_nacimiento,
-                fecha_alta,
-                fecha_baja,
-                CUIT,
-                activo,
-                mail,
-                telef_area,
-                telef_numero
-            FROM Persona
-            WHERE activo
-              AND EXTRACT(YEAR FROM fecha_alta) =
-                  EXTRACT(YEAR FROM CURRENT_TIMESTAMP)
-        ) AS datos_persona USING (id_cliente)
-    ) AS datos_cliente USING (id_cliente)
-    JOIN (
-        SELECT id_servicio, nombre AS nombre_servicio, costo
-        FROM Servicio
-        WHERE activo
-    ) AS datos_servicio USING (id_servicio);
+    SELECT DISTINCT
+        c.id_cliente,
+        p.tipo,
+        p.tipodoc,
+        p.nrodoc,
+        p.nombre,
+        p.apellido,
+        p.fecha_nacimiento,
+        p.fecha_alta,
+        p.fecha_baja,
+        p.CUIT,
+        p.activo,
+        p.mail,
+        p.telef_area,
+        p.telef_numero,
+        c.saldo,
+        s.id_servicio,
+        s.nombre AS nombre_servicio,
+        s.costo
+    FROM Equipo
+    JOIN Cliente c USING (id_cliente)
+    JOIN Persona p
+    ON (c.id_cliente = p.id_persona)
+    JOIN Servicio s USING (id_servicio)
+    WHERE p.activo
+      AND s.activo
+      AND EXTRACT(YEAR FROM p.fecha_alta) =
+          EXTRACT(YEAR FROM CURRENT_TIMESTAMP);
 
 DROP VIEW IF EXISTS Vista3;
 CREATE OR REPLACE VIEW Vista3 AS
-    SELECT *
-    FROM Servicio
-    JOIN (
+    WITH fechas AS (
         SELECT
-            id_servicio,
-            anio,
-            mes,
-            SUM(importe) AS monto_facturado
-        FROM LineaComprobante
-        JOIN (
-            SELECT
-                id_comp,
-                id_tcomp,
-                EXTRACT(MONTH FROM fecha) AS mes,
-                EXTRACT(YEAR FROM fecha)  AS anio
-            FROM Comprobante
-            WHERE AGE(fecha) <= '20 years'
-              AND id_tcomp = 1
-        ) AS datos_comp USING (id_comp, id_tcomp)
-        GROUP BY id_servicio, mes, anio
-    ) AS datos_linea USING (id_servicio)
+        GENERATE_SERIES(
+            DATE_TRUNC('month', CURRENT_TIMESTAMP - INTERVAL '20 years'),
+            DATE_TRUNC('month', CURRENT_TIMESTAMP),
+            '1 month'
+        ) AS fecha_por_mes
+    )
+    SELECT
+        s.id_servicio,
+        nombre,
+        periodico,
+        costo,
+        intervalo,
+        tipo_intervalo,
+        activo,
+        id_cat,
+        EXTRACT(YEAR FROM fecha_por_mes) AS anio,
+        EXTRACT(MONTH FROM fecha_por_mes) AS mes,
+        COALESCE(SUM(importe * cantidad), 0) AS monto_facturado
+    FROM Servicio s CROSS JOIN fechas
+    LEFT JOIN (
+        SELECT id_servicio, lc.importe, cantidad, DATE_TRUNC('month', c.fecha) AS fecha
+        FROM LineaComprobante lc
+        JOIN Comprobante c USING (id_comp, id_tcomp)
+        WHERE id_tcomp = 1
+          AND AGE(c.fecha) <= '20 years'
+    ) AS datos_linea
+    ON (s.id_servicio = datos_linea.id_servicio AND fechas.fecha_por_mes = datos_linea.fecha)
     WHERE periodico
+    GROUP BY
+        s.id_servicio,
+        nombre,
+        periodico,
+        costo,
+        intervalo,
+        tipo_intervalo,
+        activo,
+        id_cat,
+        EXTRACT(YEAR FROM fecha_por_mes),
+        EXTRACT(MONTH FROM fecha_por_mes)
     ORDER BY id_servicio, anio, mes, monto_facturado;
 
 DROP VIEW IF EXISTS Vista1_alternativa;
@@ -492,14 +502,15 @@ CREATE OR REPLACE VIEW Vista3_alternativa AS
     FROM (
         SELECT
             id_servicio, nombre, periodico, costo, intervalo, tipo_intervalo, activo, id_cat, anio, mes,
-            SUM(importe) AS monto_facturado
+            SUM(importe * cantidad) AS monto_facturado
         FROM Servicio
         JOIN (
             SELECT
                 id_servicio,
                 anio,
                 mes,
-                importe
+                importe,
+                cantidad
             FROM LineaComprobante
             JOIN (
                 SELECT
@@ -606,31 +617,20 @@ BEGIN
     )
     SELECT
         DENSE_RANK() OVER (ORDER BY id_cliente) + max_comp,
-        id_cliente,
-        id_servicio,
-        costo,
-        cantidad
-    FROM (
-        SELECT
-            id_servicio,
-            id_cliente,
-            COUNT(*) as cantidad
-        FROM Equipo
-        WHERE id_servicio IS NOT NULL
-          AND id_cliente IS NOT NULL
-        GROUP BY id_servicio, id_cliente
-    ) AS datos_equipo
-    JOIN (
-        SELECT id_servicio, costo
-        FROM Servicio
-        WHERE activo
-          AND periodico
-    ) AS datos_servicios USING (id_servicio)
-    WHERE id_cliente IN (
-        SELECT id_persona
-        FROM Persona
-        WHERE activo
-    );
+        e.id_cliente,
+        e.id_servicio,
+        s.costo,
+        COUNT(*) AS cantidad
+    FROM Equipo e JOIN Servicio s USING (id_servicio)
+    WHERE s.activo
+      AND s.periodico
+      AND id_cliente IS NOT NULL
+      AND id_cliente IN (
+          SELECT p.id_persona
+          FROM Persona p
+          WHERE p.activo
+    )
+    GROUP BY e.id_cliente, e.id_servicio, s.costo;
 
     -- con los datos de la tabla hago un insert masivo
     -- en comprobante
@@ -656,7 +656,7 @@ BEGIN
         NULL,
         SUM(costo * cantidad),
         id_cliente,
-        1
+        NULL
     FROM temporal_data
     GROUP BY id_cliente, id_comprobante;
 
@@ -677,14 +677,14 @@ BEGIN
         1,
         descripcion,
         cantidad,
-        costo * cantidad, -- el importe no es unitario
+        costo,
         id_servicio
     FROM temporal_data;
 END $$;
 
 -- version original
 DROP PROCEDURE IF EXISTS pr_generar_facturas_antes;
-CREATE OR REPLACE PROCEDURE pr_generar_facturas_antes(comentario varchar(2048), descripcion varchar(80))
+CREATE OR REPLACE PROCEDURE pr_generar_facturas(comentario varchar(2048), descripcion varchar(80))
 LANGUAGE 'plpgsql' AS $$
 DECLARE
     secuencia_comprobante BIGINT = (SELECT max(id_comp) FROM comprobante c WHERE id_tcomp = 1);
@@ -789,6 +789,46 @@ BEGIN
             FROM Comprobante
             WHERE fecha BETWEEN fecha_inicio AND fecha_fin
         ) AS datos_comprobante USING (id_turno)
+        GROUP BY
+            id_personal,
+            nombre,
+            apellido,
+            nrodoc,
+            tipodoc;
+ END $$;
+
+-- Procedimiento optimizado
+DROP PROCEDURE IF EXISTS pr_generar_informe_alt;
+CREATE OR REPLACE PROCEDURE pr_generar_informe_alt(
+    fecha_inicio TIMESTAMP,
+    fecha_fin TIMESTAMP
+)
+LANGUAGE 'plpgsql' AS $$
+BEGIN
+    DELETE FROM Informe;
+    INSERT INTO Informe
+        SELECT
+            id_personal,
+            nombre,
+            apellido,
+            tipodoc,
+            nrodoc,
+            COALESCE(AVG(
+                COALESCE(hasta, CURRENT_TIMESTAMP) - desde
+            ), INTERVAL '0')
+            AS promedio_horas,
+            COALESCE(MAX(
+                COALESCE(hasta, CURRENT_TIMESTAMP) - desde
+            ), INTERVAL '0')
+            AS max_horas,
+            COUNT(DISTINCT id_cliente) AS cant_clientes
+        FROM Personal pl
+        JOIN Persona pa
+        ON (pl.id_personal = pa.id_persona)
+        LEFT JOIN Turno USING (id_personal)
+        LEFT JOIN Comprobante USING (id_turno)
+        WHERE id_comp IS NULL
+           OR fecha BETWEEN fecha_inicio AND fecha_fin
         GROUP BY
             id_personal,
             nombre,
@@ -929,25 +969,12 @@ DROP FUNCTION IF EXISTS fn_update_Vista2 CASCADE;
 CREATE OR REPLACE FUNCTION fn_update_Vista2()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- primero se verifica que no se estén introduciendo
-    -- nuevos datos
     if (NEW != OLD) THEN
-        RAISE NOTICE 'entré';
+        -- si no existen, da error de FK
         IF (
             NEW.id_cliente != OLD.id_cliente OR
             NEW.id_servicio != OLD.id_servicio
         ) THEN
-            IF NOT EXISTS (
-                SELECT id_cliente
-                FROM Cliente
-                WHERE id_cliente = NEW.id_cliente
-            ) OR NOT EXISTS (
-                SELECT id_servicio
-                FROM Servicio
-                WHERE id_servicio = NEW.id_servicio
-            ) THEN
-                RAISE EXCEPTION 'Se están queriendo introducir relaciones entre entidades inexistentes';
-            END IF;
             UPDATE Equipo SET
                 id_cliente = NEW.id_cliente,
                 id_servicio = NEW.id_servicio
@@ -1312,6 +1339,13 @@ MAKE_TIMESTAMP(2000, 10, 30, 0, 0, 0),
 );
 SELECT * FROM Informe;
 
+-- Resultado de pr_generar_informe_alt(timestamp, timestamp)
+CALL pr_generar_informe_alt(
+MAKE_TIMESTAMP(2000, 10, 30, 0, 0, 0),
+  MAKE_TIMESTAMP(2024, 10, 31, 0, 0, 0)
+);
+SELECT * FROM Informe;
+
 ----------- RESULTADOS DE VISTA1
 
 -- ANTES
@@ -1387,6 +1421,7 @@ WHERE descripcion ILIKE 'La fecha de carga es %';
 
 /* ------------------------------------- TRANSACCIONES -------------------------------------- */
 
+-- consulta de comprobación
 SELECT id_comp, id_tcomp, Comprobante.importe, nro_linea, LineaComprobante.importe, cantidad
 FROM LineaComprobante
 JOIN Comprobante USING (id_comp, id_tcomp)
@@ -1415,7 +1450,7 @@ WHERE id_comp = 11
 END;
 
 -- esta transacción comprueba el delete en LineaComprobante
-START TRANSACTION ;
+START TRANSACTION;
 -- borra una linea
 DELETE FROM LineaComprobante
 WHERE id_comp = 11 AND id_tcomp = 1 AND nro_linea = 2;
@@ -1425,6 +1460,13 @@ UPDATE Comprobante SET
     importe = importe - 83
 WHERE id_comp = 11
   AND id_tcomp = 1;
+END;
+
+START TRANSACTION;
+UPDATE Comprobante SET importe = importe - 1
+WHERE id_comp = 999 AND id_tcomp = 1;
+UPDATE LineaComprobante SET importe = importe - 1
+WHERE nro_linea = 1 AND id_comp = 999 AND id_tcomp = 1;
 END;
 
 -- esta transacción comprueba el update de cantidad en LineaComprobante
